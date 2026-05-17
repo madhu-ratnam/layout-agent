@@ -1,47 +1,142 @@
 import { useState, useRef } from 'react';
 
-const SYSTEM_PROMPT = `You are a layout transformation agent for a design tool. You receive a design JSON and a user instruction, and you output the updated JSON with layout changes applied.
+// ─── Pure JS transformations (no API needed for these) ───────────────────────
 
-Semantic roles in the design:
-- "Background.png" (img_1778485681535_4): full-canvas background image — always covers 100% of canvas
-- "Product.png" (img_1778489515746_17): the main product image
-- "circle_1778488914968_15" + "text_1778489078397_16": the offer badge (yellow circle with "20% OFF") — keep them together
-- "text_1778486306230_8": MAIN HEADLINE "Luxury Comfort, Surprisingly Attainable" (fontSize 72, italic)
-- "text_1778486136643_7": SUBHEADLINE "Comfort that defines modern living." (fontSize 48)
-- "text_1778486004640_6": "Limited time offer" text (usually at bottom)
-- "text_1778486552508_9": "Over 8,000 happy homes" social proof
-- img_1778486846247_10, img_1778486856821_11, img_1778487081392_12, img_1778487101466_13, img_1778487110538_14: small rating/star icon decorations
+function syncNormalized(node, W, H) {
+  node.nx = node.x / W;
+  node.ny = node.y / H;
+  node.nw = node.width / W;
+  node.nh = node.height / H;
+  return node;
+}
 
-Coordinate rules:
-- x, y = absolute pixel position (top-left of element)
-- width, height = element size in pixels
-- nx = x / canvasWidth, ny = y / canvasHeight
-- nw = width / canvasWidth, nh = height / canvasHeight
-- ALWAYS keep nx,ny,nw,nh in sync with x,y,width,height after any change
+function deepClone(obj) {
+  return JSON.parse(JSON.stringify(obj));
+}
 
-Transformation rules:
-1. ASPECT RATIO CHANGE (e.g. "convert to 9:16"):
-   - 9:16 means width=1080, height=1920
-   - Scale all y positions: newY = oldNY * newHeight
-   - Keep x positions by normalized ratio: newX = oldNX * newWidth
-   - Background must cover full new canvas
-   - Spread elements vertically across the taller canvas with good spacing
+function applyTransform(layout, instruction) {
+  const cmd = instruction.toLowerCase();
+  const result = deepClone(layout);
+  const ab = result.nodes['artboard_1778485662755_3'];
+  const W = ab.width;
+  const H = ab.height;
+  const nodes = result.nodes;
 
-2. "KEEP PRODUCT LARGE": Product.png width >= 80% of canvas width, positioned in lower half
+  // Helper to move a node by id
+  function moveNode(id, newX, newY) {
+    if (!nodes[id]) return;
+    nodes[id].x = newX;
+    nodes[id].y = newY;
+    syncNormalized(nodes[id], ab.width, ab.height);
+  }
+  function resizeNode(id, newW, newH) {
+    if (!nodes[id]) return;
+    nodes[id].width = newW;
+    nodes[id].height = newH;
+    syncNormalized(nodes[id], ab.width, ab.height);
+  }
 
-3. "MOVE HEADLINE TO TOP": Set text_1778486306230_8 y to ~40px from top
+  // ── Convert to 9:16 ──────────────────────────────────────────────────────
+  if (cmd.includes('9:16') || cmd.includes('9 16') || cmd.includes('portrait') || cmd.includes('phone')) {
+    const newW = 1080, newH = 1920;
+    ab.width = newW; ab.height = newH;
 
-4. "MOVE OFFER BADGE HIGHER": Decrease y of both circle_1778488914968_15 and text_1778489078397_16 by ~100px
+    // Background covers full canvas
+    const bg = nodes['img_1778485681535_4'];
+    bg.x = 0; bg.y = 0; bg.width = newW; bg.height = newH;
+    syncNormalized(bg, newW, newH);
 
-5. "MAKE HEADLINE SMALLER": Reduce fontSize of text_1778486306230_8 by 30%, update fontSizeRatio = fontSize/canvasWidth
+    // Reposition all other nodes using normalized coords scaled to new canvas
+    Object.values(nodes).forEach(n => {
+      if (n.id === 'artboard_1778485662755_3' || n.id === 'img_1778485681535_4') return;
+      n.x = n.nx * newW;
+      n.y = n.ny * newH;
+      n.width = n.nw * newW;
+      n.height = n.nh * newH;
+      syncNormalized(n, newW, newH);
+    });
 
-6. "MAKE HEADLINE BIGGER": Increase fontSize of text_1778486306230_8 by 30%, update fontSizeRatio
+    // Spread elements nicely in taller canvas
+    // Stars row at top
+    ['img_1778486846247_10','img_1778486856821_11','img_1778487081392_12','img_1778487101466_13','img_1778487110538_14'].forEach(id => {
+      if (nodes[id]) { nodes[id].y = 80; syncNormalized(nodes[id], newW, newH); }
+    });
+    if (nodes['text_1778486552508_9']) { moveNode('text_1778486552508_9', nodes['text_1778486552508_9'].x, 80); }
 
-Always return the COMPLETE updated JSON — do not omit any nodes.
+    // Headline
+    moveNode('text_1778486306230_8', 60, 160);
+    // Subheadline
+    moveNode('text_1778486136643_7', nodes['text_1778486136643_7'].x, 480);
+    // Badge (circle + text)
+    moveNode('circle_1778488914968_15', 80, 580);
+    moveNode('text_1778489078397_16', 103, 600);
+    // Product image — large in middle
+    nodes['img_1778489515746_17'].x = 40;
+    nodes['img_1778489515746_17'].y = 820;
+    nodes['img_1778489515746_17'].width = 1000;
+    nodes['img_1778489515746_17'].height = 700;
+    syncNormalized(nodes['img_1778489515746_17'], newW, newH);
+    // Limited time offer at bottom
+    moveNode('text_1778486004640_6', nodes['text_1778486004640_6'].x, 1780);
 
-Respond in this EXACT format (no markdown, no extra text):
-EXPLANATION: [1-2 sentences describing exactly what changed]
-JSON: [complete minified JSON on one line]`;
+    return { layout: result, explanation: 'Converted canvas from 1:1 to 9:16 (1080×1920) and repositioned all elements for the taller portrait format.' };
+  }
+
+  // ── Move headline to top ─────────────────────────────────────────────────
+  if (cmd.includes('headline') && cmd.includes('top')) {
+    moveNode('text_1778486306230_8', nodes['text_1778486306230_8'].x, 30);
+    return { layout: result, explanation: 'Moved the main headline to the top of the canvas (y=30px).' };
+  }
+
+  // ── Keep product large ───────────────────────────────────────────────────
+  if (cmd.includes('product') && (cmd.includes('large') || cmd.includes('big') || cmd.includes('keep'))) {
+    const p = nodes['img_1778489515746_17'];
+    p.x = 40; p.y = 520; p.width = 1000; p.height = 520;
+    syncNormalized(p, W, H);
+    return { layout: result, explanation: 'Enlarged the product image to 1000×520px and centered it on the canvas.' };
+  }
+
+  // ── Move offer badge higher ──────────────────────────────────────────────
+  if ((cmd.includes('badge') || cmd.includes('offer') || cmd.includes('20%')) && (cmd.includes('high') || cmd.includes('up') || cmd.includes('move'))) {
+    const dy = -120;
+    ['circle_1778488914968_15', 'text_1778489078397_16'].forEach(id => {
+      if (nodes[id]) { nodes[id].y = Math.max(20, nodes[id].y + dy); syncNormalized(nodes[id], W, H); }
+    });
+    return { layout: result, explanation: 'Moved the offer badge (yellow circle and 20% OFF text) 120px higher.' };
+  }
+
+  // ── Make headline smaller ────────────────────────────────────────────────
+  if (cmd.includes('headline') && (cmd.includes('small') || cmd.includes('reduc') || cmd.includes('shrink'))) {
+    const t = nodes['text_1778486306230_8'];
+    t.style.visual.fontSize = Math.round(t.style.visual.fontSize * 0.7);
+    t.fontSizeRatio = t.style.visual.fontSize / W;
+    return { layout: result, explanation: `Reduced headline font size to ${t.style.visual.fontSize}px (70% of original).` };
+  }
+
+  // ── Make headline bigger ─────────────────────────────────────────────────
+  if (cmd.includes('headline') && (cmd.includes('big') || cmd.includes('larg') || cmd.includes('increas'))) {
+    const t = nodes['text_1778486306230_8'];
+    t.style.visual.fontSize = Math.round(t.style.visual.fontSize * 1.3);
+    t.fontSizeRatio = t.style.visual.fontSize / W;
+    return { layout: result, explanation: `Increased headline font size to ${t.style.visual.fontSize}px (130% of original).` };
+  }
+
+  // ── Reset / restore ──────────────────────────────────────────────────────
+  if (cmd.includes('reset') || cmd.includes('original') || cmd.includes('undo')) {
+    return { layout: null, explanation: 'Use the Reset button at the top right to restore the original layout.' };
+  }
+
+  return null; // not handled locally — fall through to AI
+}
+
+// ─── AI fallback for unknown instructions ─────────────────────────────────────
+
+const AI_SYSTEM = `You are a layout agent. Given a short instruction and canvas size, output ONLY a JSON patch like:
+{"nodeId": "text_1778486306230_8", "changes": {"x": 100, "y": 50, "fontSize": 60}}
+
+You can patch multiple nodes: return a JSON array of patch objects.
+Each patch: {"nodeId": "...", "changes": {"x":N, "y":N, "width":N, "height":N, "fontSize":N}}
+Only include fields that change. No explanation, no markdown, just the JSON array.`;
 
 export function useLayoutAgent() {
   const [isLoading, setIsLoading] = useState(false);
@@ -50,39 +145,41 @@ export function useLayoutAgent() {
   async function transformLayout(currentLayout, userInstruction) {
     setIsLoading(true);
 
-    const artboard = currentLayout.nodes['artboard_1778485662755_3'];
-    const W = artboard.width;
-    const H = artboard.height;
-
-    const userMsg = `Current canvas: ${W}x${H}px\n\nCurrent layout JSON:\n${JSON.stringify(currentLayout)}\n\nInstruction: ${userInstruction}`;
-
-    historyRef.current.push({ role: 'user', content: userMsg });
-
     try {
-      const apiKey = process.env.REACT_APP_GEMINI_API_KEY;
-      if (!apiKey || apiKey === 'your_api_key_here') {
-        throw new Error('Please set REACT_APP_GEMINI_API_KEY in your .env file. Get a FREE key at https://aistudio.google.com/apikey');
+      // Try local transform first (no API needed)
+      const local = applyTransform(currentLayout, userInstruction);
+      if (local) {
+        historyRef.current.push({ role: 'user', content: userInstruction });
+        historyRef.current.push({ role: 'assistant', content: local.explanation });
+        return { explanation: local.explanation, updatedLayout: local.layout || currentLayout };
       }
 
-      // Build conversation: system + history (last 6 turns)
-      const history = historyRef.current.slice(-6);
-      const contents = history.map(m => ({
-        role: m.role === 'assistant' ? 'model' : 'user',
-        parts: [{ text: m.content }],
-      }));
+      // Fallback to AI for unknown instructions
+      const apiKey = process.env.REACT_APP_GROQ_API_KEY;
+      if (!apiKey || apiKey === 'your_api_key_here') {
+        throw new Error('Unknown instruction. Please set REACT_APP_GROQ_API_KEY for AI-powered transforms.');
+      }
 
-      const response = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            system_instruction: { parts: [{ text: SYSTEM_PROMPT }] },
-            contents,
-            generationConfig: { maxOutputTokens: 8192, temperature: 0.2 },
-          }),
-        }
-      );
+      const ab = currentLayout.nodes['artboard_1778485662755_3'];
+      const nodeList = Object.values(currentLayout.nodes)
+        .filter(n => n.type !== 'artboard')
+        .map(n => ({ id: n.id, name: n.name, type: n.type, x: Math.round(n.x), y: Math.round(n.y), w: Math.round(n.width), h: Math.round(n.height) }));
+
+      const prompt = `Canvas: ${ab.width}x${ab.height}px\nNodes: ${JSON.stringify(nodeList)}\nInstruction: ${userInstruction}`;
+
+      const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
+        body: JSON.stringify({
+          model: 'llama-3.3-70b-versatile',
+          max_tokens: 1024,
+          temperature: 0.1,
+          messages: [
+            { role: 'system', content: AI_SYSTEM },
+            { role: 'user', content: prompt },
+          ],
+        }),
+      });
 
       if (!response.ok) {
         const err = await response.json();
@@ -90,33 +187,36 @@ export function useLayoutAgent() {
       }
 
       const data = await response.json();
-      const raw = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+      const raw = (data.choices?.[0]?.message?.content || '').trim().replace(/```json|```/g, '');
+      const patches = JSON.parse(raw);
+      const updated = JSON.parse(JSON.stringify(currentLayout));
 
-      const explanationMatch = raw.match(/EXPLANATION:\s*(.+?)(?=\nJSON:|$)/s);
-      const jsonMatch = raw.match(/JSON:\s*(\{[\s\S]+)/);
+      (Array.isArray(patches) ? patches : [patches]).forEach(patch => {
+        const node = updated.nodes[patch.nodeId];
+        if (!node) return;
+        const W = updated.nodes['artboard_1778485662755_3'].width;
+        const H = updated.nodes['artboard_1778485662755_3'].height;
+        if (patch.changes.x !== undefined) node.x = patch.changes.x;
+        if (patch.changes.y !== undefined) node.y = patch.changes.y;
+        if (patch.changes.width !== undefined) node.width = patch.changes.width;
+        if (patch.changes.height !== undefined) node.height = patch.changes.height;
+        if (patch.changes.fontSize !== undefined) {
+          node.style.visual.fontSize = patch.changes.fontSize;
+          node.fontSizeRatio = patch.changes.fontSize / W;
+        }
+        syncNormalized(node, W, H);
+      });
 
-      const explanation = explanationMatch ? explanationMatch[1].trim() : 'Layout updated.';
-
-      let updatedLayout = null;
-      if (jsonMatch) {
-        const jsonStr = jsonMatch[1].trim();
-        updatedLayout = JSON.parse(jsonStr);
-      }
-
+      const explanation = `Applied: ${userInstruction}`;
+      historyRef.current.push({ role: 'user', content: userInstruction });
       historyRef.current.push({ role: 'assistant', content: explanation });
-      if (historyRef.current.length > 12) {
-        historyRef.current = historyRef.current.slice(-12);
-      }
+      return { explanation, updatedLayout: updated };
 
-      return { explanation, updatedLayout };
     } finally {
       setIsLoading(false);
     }
   }
 
-  function resetHistory() {
-    historyRef.current = [];
-  }
-
+  function resetHistory() { historyRef.current = []; }
   return { transformLayout, isLoading, resetHistory };
 }
