@@ -59,30 +59,30 @@ export function useLayoutAgent() {
     historyRef.current.push({ role: 'user', content: userMsg });
 
     try {
-      const apiKey = process.env.REACT_APP_OPENROUTER_API_KEY;
+      const apiKey = process.env.REACT_APP_GEMINI_API_KEY;
       if (!apiKey || apiKey === 'your_api_key_here') {
-        throw new Error('Please set REACT_APP_OPENROUTER_API_KEY in your .env file. Get a free key at https://openrouter.ai');
+        throw new Error('Please set REACT_APP_GEMINI_API_KEY in your .env file. Get a FREE key at https://aistudio.google.com/apikey');
       }
 
-      const messages = [
-        { role: 'system', content: SYSTEM_PROMPT },
-        ...historyRef.current.slice(-6),
-      ];
+      // Build conversation: system + history (last 6 turns)
+      const history = historyRef.current.slice(-6);
+      const contents = history.map(m => ({
+        role: m.role === 'assistant' ? 'model' : 'user',
+        parts: [{ text: m.content }],
+      }));
 
-      const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${apiKey}`,
-          'HTTP-Referer': window.location.origin,
-          'X-Title': 'Layout Agent',
-        },
-        body: JSON.stringify({
-          model: 'meta-llama/llama-3.3-70b-instruct:free',
-          max_tokens: 4096,
-          messages,
-        }),
-      });
+      const response = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            system_instruction: { parts: [{ text: SYSTEM_PROMPT }] },
+            contents,
+            generationConfig: { maxOutputTokens: 8192, temperature: 0.2 },
+          }),
+        }
+      );
 
       if (!response.ok) {
         const err = await response.json();
@@ -90,7 +90,7 @@ export function useLayoutAgent() {
       }
 
       const data = await response.json();
-      const raw = data.choices?.[0]?.message?.content || '';
+      const raw = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
 
       const explanationMatch = raw.match(/EXPLANATION:\s*(.+?)(?=\nJSON:|$)/s);
       const jsonMatch = raw.match(/JSON:\s*(\{[\s\S]+)/);
